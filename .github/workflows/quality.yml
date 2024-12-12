@@ -1,0 +1,71 @@
+---
+
+name: "Quality"
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+jobs:
+  check-quality:
+    runs-on: "ubuntu-latest"
+    steps:
+      # setup
+      - uses: "webfactory/ssh-agent@v0.9.0"
+        with:
+          ssh-private-key: "${{ secrets.SSH_PRIVATE_KEY }}"
+      - uses: "actions/checkout@v4"
+      - uses: "DeterminateSystems/nix-installer-action@v16"
+        with:
+          diagnostic-endpoint: ""
+      - uses: "DeterminateSystems/magic-nix-cache-action@v8"
+        with:
+          diagnostic-endpoint: ""
+      - name: "Print flake metadata"
+        run: "nix flake metadata"
+      - uses: "DeterminateSystems/flake-checker-action@v9"
+        with:
+          fail-mode: true
+          ignore-missing-flake-lock: false
+          nixpkgs-keys: "nixpkgs"
+          send-statistics: false
+      - name: "Setup shell"
+        run: "nix develop --command true"
+
+      # tests
+      - name: "Flake check"
+        run: "nix flake check --all-systems --print-build-logs"
+
+      - name: "Files respect Editorconfig configuration"
+        run: "nix develop --command editorconfig-checker"
+
+      - name: "Files respect treefmt format"
+        run: |
+          # we need to explicitly add all formatters except cue
+          # this is due to cue re-generating files, which would cause --fail-on-change to fail.
+          nix develop --command           \
+            treefmt                       \
+              --no-cache --fail-on-change \
+              --formatters alejandra      \
+              --formatters gci            \
+              --formatters gofumpt        \
+              --formatters goimports      \
+              --formatters jsonfmt        \
+              --formatters mdsh           \
+              --formatters shfmt          \
+              --formatters yamlfmt
+
+      - name: "Lint Github Actions"
+        run: "nix develop --command lint-ghaction"
+
+      - name: "Lint Shell scripts"
+        run: "nix develop --command lint-sh"
+
+      - name: "Lint Yaml configurations files"
+        run: "nix develop --command lint-yaml"
+
+      - name: "Lint Go code"
+        run: "nix develop --command lint-go"
+
+      - name: "Lint Nix code"
+        run: "nix develop --command lint-nix"

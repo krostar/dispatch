@@ -1,0 +1,5 @@
+/.direnv
+/result
+
+# nixago: ignore-linked-files
+/.editorconfig
