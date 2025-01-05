@@ -7,27 +7,16 @@ import (
 	"sync"
 )
 
-type (
-	// Dispatcher exposes a way to run multiple pools of different processors
-	// and a way to push event to those processors.
-	Dispatcher[Event any] struct {
-		m sync.RWMutex // used to prevent editing events while new events are pushed
-		o options[Event]
+// Dispatcher exposes a way to run multiple pools of different processors
+// and a way to push event to those processors.
+type Dispatcher[Event any] struct {
+	m sync.RWMutex // used to prevent editing events while new events are pushed
+	o options[Event]
 
-		processors       []EventProcessorFunc[Event]
-		events           chan *processorInternalEvent[Event]
-		processorsEvents []chan *processorInternalEvent[Event]
-	}
-
-	// EventProcessor expose the provided event to all configured processors.
-	// See Dispatcher.ProcessEvent for more information.
-	EventProcessor[Event any] interface {
-		ProcessEvent(ctx context.Context, event Event) error
-	}
-
-	// EventProcessorFunc defines the function signature to process an event.
-	EventProcessorFunc[Event any] func(ctx context.Context, event Event) error
-)
+	processors       []EventProcessorFunc[Event]
+	events           chan *processorInternalEvent[Event]
+	processorsEvents []chan *processorInternalEvent[Event]
+}
 
 // New initializes a Dispatcher with provided processors and options.
 func New[Event any](processors []EventProcessorFunc[Event], opts ...Option[Event]) *Dispatcher[Event] {
@@ -43,20 +32,25 @@ func New[Event any](processors []EventProcessorFunc[Event], opts ...Option[Event
 // While it is possible to run the service multiple times, it must only be executed once at a time.
 func (s *Dispatcher[Event]) Run(ctx context.Context) error {
 	{ // setup main and processor event channels
-		s.m.Lock() // the lock is used to prevent race condition in the ProcessEvent func
-		s.events = make(chan *processorInternalEvent[Event])
+		s.m.Lock()                                           // the lock is used to prevent race condition in the ProcessEvent func
+		s.events = make(chan *processorInternalEvent[Event]) // main event channel
 
-		s.processorsEvents = make([]chan *processorInternalEvent[Event], len(s.processors))
+		s.processorsEvents = make([]chan *processorInternalEvent[Event], len(s.processors)) // event channel per processor
 		for i := range len(s.processors) {
 			s.processorsEvents[i] = make(chan *processorInternalEvent[Event])
 		}
 		s.m.Unlock()
 	}
 
+	var processorStopped chan struct{} // channel updated once all processors are closed
+	if s.o.instances <= 0 {
+		processorStopped = s.startUnlimitedEventProcessors()
+	} else {
+		processorStopped = s.startLimitedEventProcessors()
+	}
 	broadcastStopped := s.startEventBroadcaster()
-	processorStopped := s.startEventProcessors()
 
-	// wait until context is done
+	// wait until main context is done
 	<-ctx.Done()
 	// the context is done, we must quit
 
@@ -65,12 +59,12 @@ func (s *Dispatcher[Event]) Run(ctx context.Context) error {
 		// 		the lock is used to prevent "writing on closed channel" error in the ProcessEvent func
 		s.m.Lock()
 		// 		if we have the lock we can safely close the main event channel
+		// 		setting its value to nil make future calls to the ProcessEvent func fail quickly
 		close(s.events)
-		// 		setting this value to nil make future calls to the ProcessEvent func fail quickly
 		s.events = nil
-		// 		we can now let the ProcessEvent func be called again, we safely won't have any more events
+		// 		we can now let the ProcessEvent func be called again, we won't have any more events on processor channels
 		s.m.Unlock()
-		//		by closing the main event channel, we closed the broadcaster main loop, so it should quit
+		//		by closing the main event channel, the broadcaster main loop should have closed, so it should quit
 		<-broadcastStopped
 		close(broadcastStopped)
 		//		since it returned we for sure know that no new processor events can be written
@@ -93,7 +87,7 @@ func (s *Dispatcher[Event]) Run(ctx context.Context) error {
 }
 
 // ProcessEvent pushes the provided event to each processor, wait for execution and return the execution result.
-// If multiple processors (not multiple instances, but multiple functions) are provided, each provider will
+// If multiple processors (not multiple instances, but multiple functions) are provided, each processor will
 // be executing the provided event, and the execution result will be the merge of all processor executions results.
 // Run must be called prior to this function, otherwise processors won't be started and ProcessEvent will fail.
 // The provided context is passed to underlying processors. In case the context is canceled before any processors
@@ -133,13 +127,13 @@ func (s *Dispatcher[Event]) ProcessEvent(ctx context.Context, event Event) error
 func (s *Dispatcher[Event]) startEventBroadcaster() chan struct{} {
 	stopped := make(chan struct{})
 
+	main := s.events // in case s.events is set to nil before the goroutine starts
+
 	go func() {
-		if s.events != nil {
-			// for each new message, propagate it to all event processor channels
-			for event := range s.events {
-				for _, events := range s.processorsEvents {
-					events <- event
-				}
+		// for each new message, propagate it to all event processor channels
+		for event := range main {
+			for _, events := range s.processorsEvents {
+				events <- event
 			}
 		}
 		stopped <- struct{}{}
@@ -148,31 +142,64 @@ func (s *Dispatcher[Event]) startEventBroadcaster() chan struct{} {
 	return stopped
 }
 
-// startEventProcessors starts all processors handlers.
-func (s *Dispatcher[Event]) startEventProcessors() chan struct{} {
+// startLimitedEventProcessors starts all processors handlers.
+func (s *Dispatcher[Event]) startLimitedEventProcessors() chan struct{} {
+	var wg sync.WaitGroup
+
+	wg.Add(len(s.processors) * s.o.instances)
+	getProcessorMiddlewares := s.o.getGlobalMiddlewares()
+
+	for i := range s.processors {
+		pid, events, getProcessorInstanceMiddleware := i, s.processorsEvents[i], getProcessorMiddlewares(s.processors[i])
+
+		// run as many instances of the same processors as asked
+		for range s.o.instances {
+			processor := getProcessorInstanceMiddleware()
+			go func() {
+				defer wg.Done()
+				for event := range events {
+					event.PushResult(pid, processor(event.Context(), event.Event()))
+				}
+			}()
+		}
+	}
+
 	stopped := make(chan struct{})
 
 	go func() {
-		var wg sync.WaitGroup
+		wg.Wait()
+		stopped <- struct{}{}
+	}()
 
-		wg.Add(len(s.processors) * s.o.instances)
-		getProcessorMiddlewares := s.o.getGlobalMiddlewares()
+	return stopped
+}
 
-		for i := range s.processors {
-			pid, events, getProcessorInstanceMiddleware := i, s.processorsEvents[i], getProcessorMiddlewares(s.processors[i])
+// startUnlimitedEventProcessors starts processors when new messages arrive, with no limits.
+func (s *Dispatcher[Event]) startUnlimitedEventProcessors() chan struct{} {
+	var wg sync.WaitGroup
 
-			// run as many instances of the same processors as asked
-			for range s.o.instances {
-				processor := getProcessorInstanceMiddleware()
+	getProcessorMiddlewares := s.o.getGlobalMiddlewares()
+
+	wg.Add(len(s.processors))
+	for i := range s.processors {
+		pid, events, getProcessorInstanceMiddleware := i, s.processorsEvents[i], getProcessorMiddlewares(s.processors[i])
+
+		go func() {
+			defer wg.Done()
+
+			for event := range events {
+				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					for event := range events {
-						event.PushResult(pid, processor(event.Context(), event.Event()))
-					}
+					event.PushResult(pid, getProcessorInstanceMiddleware()(event.Context(), event.Event()))
 				}()
 			}
-		}
+		}()
+	}
 
+	stopped := make(chan struct{})
+
+	go func() {
 		wg.Wait()
 		stopped <- struct{}{}
 	}()

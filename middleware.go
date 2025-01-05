@@ -167,5 +167,6 @@ func (middlewares ProcessorMiddlewaresFunc[Event]) Chain(processor EventProcesso
 	for _, middleware := range reversed {
 		chain = middleware(chain)
 	}
+
 	return chain
 }

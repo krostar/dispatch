@@ -6,14 +6,14 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     harmony = {
-      url = "git+ssh://git@github.com/krostar/harmony";
+      url = "github:krostar/harmony";
       inputs = {
         synergy.follows = "synergy";
         nixpkgs-unstable.follows = "nixpkgs";
       };
     };
     synergy = {
-      url = "git+ssh://git@github.com/krostar/synergy";
+      url = "github:krostar/synergy";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

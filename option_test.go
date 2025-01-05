@@ -20,6 +20,14 @@ func Test_WithMultipleInstances(t *testing.T) {
 	assert.Equal(t, o.instances, 3)
 }
 
+func TestWithUnlimitedInstances(t *testing.T) {
+	type myEvent struct{}
+
+	var o options[myEvent]
+	WithUnlimitedInstances[myEvent]()(&o)
+	assert.Equal(t, o.instances, -1)
+}
+
 func Test_WithTimeout(t *testing.T) {
 	type myEvent struct{}
 

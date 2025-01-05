@@ -27,6 +27,13 @@ func WithMultipleInstances[Event any](instances int) Option[Event] {
 	}
 }
 
+// WithUnlimitedInstances implies creating one instance each time an event is received to handle it.
+func WithUnlimitedInstances[Event any]() Option[Event] {
+	return func(o *options[Event]) {
+		o.instances = -1
+	}
+}
+
 // WithTimeout specifies the maximum of time a given event can be processed before canceling processors.
 // The valid is directly provided to context.WithTimeout.
 func WithTimeout[Event any](timeout time.Duration) Option[Event] {
