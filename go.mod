@@ -6,7 +6,7 @@ require (
 	github.com/eapache/go-resiliency v1.7.0
 	go.uber.org/goleak v1.3.0
 	go.uber.org/multierr v1.11.0
-	golang.org/x/time v0.8.0
+	golang.org/x/time v0.9.0
 	gotest.tools/v3 v3.5.1
 )
 
